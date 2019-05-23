@@ -26,6 +26,12 @@ import (
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/robustperception/pushprox/util"
+
+	"golang.org/x/sys/windows/svc"
+)
+
+const (
+	serviceName = "pushprox_client"
 )
 
 var (
@@ -242,11 +248,63 @@ func main() {
 		TLSClientConfig: tlsConfig,
 	}
 
+	isInteractive, err := svc.IsAnInteractiveSession()
+	if err != nil {
+		level.Error(coordinator.logger).Log(err)
+	}
+
+	stopCh := make(chan bool)
+	if !isInteractive {
+		go func() {
+			err = svc.Run(serviceName, &pushProxService{stopCh: stopCh})
+			if err != nil {
+				level.Error(coordinator.logger).Log("Failed to start service: %v", err)
+			}
+		}()
+	}
+
+	go func() {
+		for {
+			err := loop(coordinator, transport)
+			if err != nil {
+				pollErrorCounter.Inc()
+				time.Sleep(time.Second) // Don't pound the server. TODO: Randomised exponential backoff.
+			}
+		}
+	}()
+
 	for {
-		err := loop(coordinator, transport)
-		if err != nil {
-			pollErrorCounter.Inc()
-			time.Sleep(time.Second) // Don't pound the server. TODO: Randomised exponential backoff.
+		if <-stopCh {
+			level.Error(coordinator.logger).Log("Shutting down pushprox client")
+			break
 		}
 	}
+}
+
+type pushProxService struct {
+	stopCh chan<- bool
+}
+
+func (s *pushProxService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (ssec bool, errno uint32) {
+	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
+	changes <- svc.Status{State: svc.StartPending}
+	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+loop:
+	for {
+		select {
+		case c := <-r:
+			switch c.Cmd {
+			case svc.Interrogate:
+				changes <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				s.stopCh <- true
+				break loop
+			default:
+				logger := log.NewLogfmtLogger(os.Stderr)
+				level.Error(logger).Log("unexpected control request #%d", c)
+			}
+		}
+	}
+	changes <- svc.Status{State: svc.StopPending}
+	return
 }

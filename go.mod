@@ -15,5 +15,5 @@ require (
 	github.com/prometheus/procfs v0.0.0-20190507164030-5867b95ac084 // indirect
 	github.com/stretchr/testify v1.3.0 // indirect
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
-	golang.org/x/sys/windows/svc
+//golang.org/x/sys/windows/svc //0e01d883c5c5
 )
